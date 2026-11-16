@@ -2,6 +2,8 @@ import io
 import json
 import queue
 import wave
+import webrtcvad
+import unicodedata
 import time
 import numpy as np
 import collections
@@ -97,6 +99,31 @@ mapa_funciones = {
 }
 
 def procesar_orden(mensaje):
+        # Detectar preguntas relacionadas con la hora
+    mensaje_normalizado = unicodedata.normalize(
+        "NFD", mensaje.lower()
+    )
+
+    mensaje_normalizado = "".join(
+        c for c in mensaje_normalizado
+        if unicodedata.category(c) != "Mn"
+    )
+
+    frases_hora = [
+        "que hora es",
+        "dime la hora",
+        "dime que hora",
+        "me dices la hora",
+        "ver hora actual",
+        "hora actual",
+        "que hora tienes",
+        "sabes que hora es"
+    ]
+
+    if any(frase in mensaje_normalizado for frase in frases_hora):
+        print("[Ejecutando: ver_hora_actual]")
+        return ver_hora_actual()
+    
     mensajes = [
         {
             'role': 'system',
@@ -124,59 +151,171 @@ def procesar_orden(mensaje):
 
     return respuesta['message']['content']
 
-def grabar_orden_segura(duracion=7):
-    """Graba tu orden usando sounddevice durante 7 segundos exactos de forma estable."""
+
+def grabar_orden_segura(duracion=20):
+    """
+    Graba una orden detectando automáticamente la voz
+    y finaliza cuando detecta suficiente silencio.
+    """
+
     fs = 16000
-    print("[Te escucho con atención... Di tu orden]")
-    
+    frame_ms = 30
+    frame_size = int(fs * frame_ms / 1000)
+
+    silencio_final = 1200
+    voz_minima = 300
+
+    frames_silencio = int(silencio_final / frame_ms)
+    frames_voz = int(voz_minima / frame_ms)
+    max_frames = int(duracion * 1000 / frame_ms)
+
+    vad = webrtcvad.Vad(2)
+
+    audio_frames = []
+    hablando = False
+    contador_voz = 0
+    contador_silencio = 0
+
+    print("[Hinata está escuchando... Habla ahora]")
+
     try:
-        # Grabamos directamente con sounddevice (que ya sabemos que funciona en tu PC)
-        audio_data = sd.rec(int(duracion * fs), samplerate=fs, channels=1, dtype='int16')
-        sd.wait()
-        
+        with sd.InputStream(
+            samplerate=fs,
+            channels=1,
+            dtype="int16",
+            blocksize=frame_size
+        ) as stream:
+
+            for _ in range(max_frames):
+
+                audio_data, overflowed = stream.read(frame_size)
+
+                if overflowed:
+                    print("[Aviso: se perdió un fragmento de audio]")
+
+                frame = audio_data.tobytes()
+
+                tiene_voz = vad.is_speech(frame, fs)
+
+                if tiene_voz:
+
+                    contador_voz += 1
+                    contador_silencio = 0
+
+                    audio_frames.append(frame)
+
+                    if contador_voz >= frames_voz:
+                        hablando = True
+
+                elif hablando:
+
+                    contador_silencio += 1
+                    audio_frames.append(frame)
+
+                    if contador_silencio >= frames_silencio:
+                        break
+
+        if not hablando:
+            print("[No se detectó voz durante el tiempo de espera]")
+            return None
+
+        audio_completo = b"".join(audio_frames)
+
         wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wf:
+
+        with wave.open(wav_io, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(fs)
-            wf.writeframes(audio_data.tobytes())
-        
+            wf.writeframes(audio_completo)
+
         wav_io.seek(0)
+
         recognizer = sr.Recognizer()
+
         with sr.AudioFile(wav_io) as source:
             audio = recognizer.record(source)
-            texto = recognizer.recognize_google(audio, language="es-ES")
+
+            texto = recognizer.recognize_google(
+                audio,
+                language="es-ES"
+            )
+
             print(f"Tú: {texto}")
             return texto
-            
-    except Exception as e:
-        print(f"Error al capturar audio: {e}")
+
+    except sr.UnknownValueError:
+        print("[No pude entender lo que dijiste]")
         return ""
+
+    except sr.RequestError as e:
+        print(f"[Error en Google Speech Recognition: {e}]")
+        return ""
+
+    except Exception as e:
+        print(f"[Error al capturar audio: {e}]")
+        return ""
+
     
-# 4. Bucle principal con la escucha estable
+
+# 4. Bucle principal con conversación continua
+
 hablar("Sistemas listos. Llámame cuando me necesites.")
 
 while True:
+
+    # Esperar la palabra clave para activar Hinata
     if esperar_palabra_clave():
+
         with cola_audio.mutex:
             cola_audio.queue.clear()
-            
+
         hablar("¿Sí? Te escucho.")
+
+        # Entrar en modo conversación
+        intentos_sin_respuesta = 0
+
         
-        orden = grabar_orden_segura()
-        
-        if not orden:
-            hablar("No te escuché bien, inténtalo de nuevo.")
-            continue
-            
-        palabras_salida = [
-            'apágate', 'apagate', 'apagar', 'cerrar', 'cierra', 
-            'terminar', 'adiós', 'adios', 'descansa', 'sal de aquí', 'salir'
-        ]
-        
-        if any(salida in orden.lower() for salida in palabras_salida):
-            hablar("Entendido. Apagando sistemas, hasta luego.")
+    while True:
+
+        # Esperar una instrucción durante un máximo de 20 segundos
+        orden = grabar_orden_segura(duracion=20)
+
+        # Si no se detectó voz durante los 20 segundos
+        if orden is None:
+
+            hablar("Han pasado 20 segundos sin recibir instrucciones. Vuelvo al modo de espera.")
             break
-            
+
+        # Si se detectó voz, pero no se pudo reconocer
+        if not orden:
+            hablar("No he conseguido entenderte. Puedes repetirlo.")
+            continue
+
+        # Normalizar la orden
+        orden_limpia = orden.lower().strip()
+
+        # Comprobar si el usuario quiere finalizar la conversación
+        palabras_salida = [
+            "apágate",
+            "apagate",
+            "descansa",
+            "adiós",
+            "adios",
+            "hasta luego",
+            "terminar conversación",
+            "terminar conversacion"
+        ]
+
+        if orden_limpia in palabras_salida:
+            hablar("Entendido. Vuelvo al modo de espera. Hasta luego.")
+            break
+
+        # Procesar la orden con Ollama
         respuesta_ia = procesar_orden(orden)
+
+        # Responder sin abandonar el modo conversación
         hablar(respuesta_ia)
+
+    # Al terminar la conversación, volverá a esperar la palabra clave
+
