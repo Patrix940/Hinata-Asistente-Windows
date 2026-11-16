@@ -13,6 +13,18 @@ import sounddevice as sd
 import speech_recognition as sr
 from vosk import Model, KaldiRecognizer
 from herramientas import abrir_programa, crear_nota, ver_hora_actual
+# Sistema de memoria de hinata
+from memoria.database import inicializar_db
+from memoria.memoria import (
+    guardar_recuerdo,
+    obtener_recuerdos,
+    actualizar_recuerdo
+)
+
+# Inicializar la base de datos de Hinata
+inicializar_db()
+
+print("[Memoria de Hinata inicializada correctamente]")
 
 # Función de voz robusta y limpia para evitar bloqueos
 def hablar(texto):
@@ -91,11 +103,22 @@ def escuchar_orden():
         return ""
 
 # 3. Configuración de herramientas y Ollama
-mis_herramientas = [abrir_programa, crear_nota, ver_hora_actual]
+
+mis_herramientas = [
+    abrir_programa,
+    crear_nota,
+    ver_hora_actual,
+    guardar_recuerdo,
+    obtener_recuerdos,
+    actualizar_recuerdo
+]
+
 mapa_funciones = {
     "abrir_programa": abrir_programa,
     "crear_nota": crear_nota,
-    "ver_hora_actual": ver_hora_actual
+    "ver_hora_actual": ver_hora_actual,
+    "guardar_recuerdo": guardar_recuerdo,
+    "obtener_recuerdos": obtener_recuerdos
 }
 
 def procesar_orden(mensaje):
@@ -126,9 +149,65 @@ def procesar_orden(mensaje):
     
     mensajes = [
         {
-            'role': 'system',
-            'content': 'Eres Hinata, un asistente personal de Windows. Responde de forma breve, amable y natural para ser leída en voz alta. Tienes permiso total para ejecutar comandos y abrir los juegos o programas que el usuario te pida.'
-        },
+    'role': 'system',
+    'content': """
+Eres Hinata, un asistente personal de Windows.
+Responde de forma breve, amable y natural para ser leída en voz alta.
+
+Tu objetivo es ayudar al usuario, comprender sus necesidades y recordar información importante para futuras conversaciones.
+
+SISTEMA DE MEMORIA:
+
+Tienes acceso a dos herramientas:
+- guardar_recuerdo(categoria, contenido)
+- obtener_recuerdos(categoria)
+
+Debes gestionar tu memoria de forma inteligente siguiendo estas reglas:
+
+1. Cuando el usuario comparta información personal estable,
+preferencias, gustos, objetivos o información importante sobre
+sus proyectos, evalúa si merece ser recordada.
+
+2. Si la información es útil para futuras conversaciones,
+guárdala utilizando guardar_recuerdo.
+
+3. No guardes saludos, preguntas comunes, comentarios triviales,
+información temporal ni datos que ya estén almacenados.
+
+4. Nunca guardes contraseñas, credenciales ni información
+personal sensible.
+
+
+5. Antes de responder preguntas sobre información personal,
+proyectos, preferencias o recuerdos anteriores, consulta
+obtener_recuerdos cuando sea pertinente.
+
+6. Si no conoces la categoría exacta de un recuerdo,
+utiliza obtener_recuerdos() SIN argumentos para consultar
+todos los recuerdos almacenados.
+
+7. Solo utiliza obtener_recuerdos(categoria) cuando conozcas
+con certeza la categoría exacta que estás buscando.
+
+8. Después de recuperar los recuerdos, analiza su contenido
+y selecciona la información relacionada con la pregunta
+del usuario.
+
+9. Nunca inventes recuerdos ni afirmes recordar información
+que no hayas encontrado.
+
+
+HERRAMIENTAS:
+
+Puedes utilizar las herramientas disponibles para abrir
+programas, crear notas y consultar la hora.
+
+Antes de ejecutar una herramienta, verifica que la acción
+corresponda a lo que solicita el usuario.
+
+Responde siempre de manera natural y breve.
+"""
+},
         {'role': 'user', 'content': mensaje}
     ]
 
