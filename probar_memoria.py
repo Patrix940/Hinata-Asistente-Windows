@@ -1,35 +1,13 @@
 
-from memoria.memoria import (
-    guardar_recuerdo,
-    obtener_recuerdos,
-    actualizar_recuerdo,
-    eliminar_recuerdo
-)
+from memoria.memoria import obtener_recuerdos
 
-# Crear un recuerdo temporal
-guardar_recuerdo(
-    "prueba_temporal",
-    "Me gusta jugar Minecraft"
-)
+recuerdos = obtener_recuerdos()
 
-# Recuperar el recuerdo creado
-recuerdos = obtener_recuerdos("prueba_temporal")
+print("\n--- RECUERDOS GUARDADOS EN HINATA ---")
 
-id_recuerdo = recuerdos[0][0]
+for recuerdo in recuerdos:
+    print("\nID:", recuerdo[0])
+    print("Categoría:", recuerdo[1])
+    print("Contenido:", recuerdo[2])
 
-# Actualizar su contenido
-actualizar_recuerdo(
-    id_recuerdo,
-    "Ahora también me gusta jugar Valorant"
-)
-
-# Comprobar el resultado
-resultado = obtener_recuerdos("prueba_temporal")
-
-print("Recuerdo actualizado:")
-print(resultado[0][2])
-
-# Eliminar únicamente el recuerdo temporal
-eliminar_recuerdo(id_recuerdo)
-
-print("\nPrueba finalizada correctamente.")
+print("\n--- FIN DE LA CONSULTA ---")

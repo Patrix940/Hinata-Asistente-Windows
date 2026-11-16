@@ -125,8 +125,9 @@ mapa_funciones = {
     "eliminar_recuerdo": eliminar_recuerdo
 }
 
+
 def procesar_orden(mensaje):
-        # Detectar preguntas relacionadas con la hora
+    # Detectar preguntas relacionadas con la hora
     mensaje_normalizado = unicodedata.normalize(
         "NFD", mensaje.lower()
     )
@@ -134,6 +135,20 @@ def procesar_orden(mensaje):
     mensaje_normalizado = "".join(
         c for c in mensaje_normalizado
         if unicodedata.category(c) != "Mn"
+    )
+
+    # Detectar solicitudes de actualización de recuerdos
+    solicitud_actualizacion = any(
+        frase in mensaje_normalizado
+        for frase in [
+            "actualiza",
+            "actualizar",
+            "actualiza mis recuerdos",
+            "modifica mi recuerdo",
+            "modificar mi recuerdo",
+            "corrige mi recuerdo",
+            "corrige mis recuerdos"
+        ]
     )
 
     frases_hora = [
@@ -150,11 +165,73 @@ def procesar_orden(mensaje):
     if any(frase in mensaje_normalizado for frase in frases_hora):
         print("[Ejecutando: ver_hora_actual]")
         return ver_hora_actual()
+
     
+    # Actualizar directamente los gustos de videojuegos
+    # cuando el usuario indica que también le gusta otro juego.
+    if (
+        solicitud_actualizacion
+        and "tambien me gusta jugar" in mensaje_normalizado
+    ):
+        nuevo_contenido = mensaje_normalizado.split(
+            "tambien me gusta jugar", 1
+        )[1]
+
+        for terminador in [
+            " actualiza",
+            " actualizar",
+            " modifica",
+            " modificar",
+            " corrige",
+            " corregir"
+        ]:
+            nuevo_contenido = nuevo_contenido.split(
+                terminador, 1
+            )[0]
+
+        nuevo_contenido = nuevo_contenido.strip(" .,!?¿¡")
+
+        if not nuevo_contenido:
+            return "No pude identificar el videojuego que quieres agregar."
+
+        recuerdos = obtener_recuerdos()
+
+        recuerdos_juegos = [
+            recuerdo for recuerdo in recuerdos
+            if recuerdo[1].strip().lower() == "juegos favoritos"
+        ]
+
+        if len(recuerdos_juegos) != 1:
+            return (
+                "No pude identificar un único recuerdo de juegos favoritos. "
+                "No modifiqué ningún recuerdo."
+            )
+
+        id_correcto = recuerdos_juegos[0][0]
+
+        print(
+            f"[Actualizando recuerdo de videojuegos: "
+            f"ID {id_correcto} -> {nuevo_contenido}]"
+        )
+
+        resultado = actualizar_recuerdo(
+            id_correcto,
+            nuevo_contenido
+        )
+
+        if resultado:
+            return (
+                f"Listo. Agregué {nuevo_contenido} "
+                "a tus juegos favoritos sin borrar los anteriores."
+            )
+
+        return "No pude actualizar el recuerdo."
+
+
     mensajes = [
         {
-    'role': 'system',
-    'content': """
+            'role': 'system',
+            'content': """
 Eres Hinata, un asistente personal de Windows.
 Responde de forma breve, amable y natural para ser leída en voz alta.
 
@@ -186,13 +263,20 @@ Debes gestionar tu memoria de forma inteligente siguiendo estas reglas:
 
 7. Nunca inventes recuerdos ni afirmes recordar información que no hayas encontrado.
 
-8. Cuando el usuario solicite modificar un recuerdo, primero consulta los recuerdos para identificar el ID correcto. Después utiliza actualizar_recuerdo con ese ID y el nuevo contenido.
+8. Cuando el usuario solicite modificar o actualizar un recuerdo, primero ejecuta obtener_recuerdos() sin argumentos para consultar todos los recuerdos.
 
-9. Cuando el usuario solicite eliminar un recuerdo, primero consulta los recuerdos para identificar el ID correcto.
+9. Los recuerdos devueltos contienen cuatro datos: ID, categoría, contenido y fecha. El ID siempre es el primer dato y es un número entero.
 
-10. Si existen varios recuerdos que podrían corresponder a lo que quiere eliminar, pregunta al usuario cuál desea borrar antes de utilizar eliminar_recuerdo.
+10. Para utilizar actualizar_recuerdo, debes copiar exactamente el ID numérico del recuerdo encontrado. Nunca utilices el nombre de la categoría, el contenido del recuerdo ni texto inventado como identificador.
 
-11. Nunca inventes IDs de recuerdos ni modifiques o elimines información sin identificar correctamente el recuerdo.
+11. El parámetro id_recuerdo debe contener exclusivamente el número del ID. El parámetro nuevo_contenido debe contener únicamente la información nueva que se desea agregar o actualizar, no toda la frase que dijo el usuario.
+
+12. Si el usuario dice "también", conserva la información anterior y agrega la nueva. Si solicita reemplazar o corregir un dato, modifica únicamente la información correspondiente.
+
+13. Si existen varios recuerdos relacionados y no puedes identificar con seguridad cuál modificar, pregunta al usuario antes de actualizar.
+
+14. Nunca afirmes que actualizaste un recuerdo si la herramienta devuelve False.
+
 
 HERRAMIENTAS:
 
@@ -200,14 +284,12 @@ Puedes utilizar las herramientas disponibles para abrir programas, crear notas y
 
 Antes de ejecutar una herramienta, verifica que la acción corresponda a lo que solicita el usuario.
 
-
 Responde siempre de manera natural y breve.
 """
-},
+        },
         {'role': 'user', 'content': mensaje}
     ]
 
-    
     # Permitir varias rondas de herramientas
     for intento in range(5):
 
@@ -219,13 +301,13 @@ Responde siempre de manera natural y breve.
 
         llamadas = respuesta['message'].get('tool_calls')
 
-        # Si no necesita más herramientas, devuelve la respuesta.
+        # Si no necesita más herramientas, devuelve la respuesta
         if not llamadas:
             return respuesta['message']['content']
 
         mensajes.append(respuesta['message'])
 
-        # Ejecutar las herramientas solicitadas.
+        # Ejecutar las herramientas solicitadas
         for llamada in llamadas:
 
             nombre_funcion = llamada['function']['name']
@@ -233,8 +315,62 @@ Responde siempre de manera natural y breve.
 
             print(f"[Ejecutando: {nombre_funcion} -> {argumentos}]")
 
+            # Bloquear guardados cuando se solicita actualizar
+            if solicitud_actualizacion and nombre_funcion == "guardar_recuerdo":
+
+                print("[Protección: guardado bloqueado porque solicitaste actualizar]")
+
+                recuerdos = obtener_recuerdos()
+
+                resultado = (
+                    "El guardado fue bloqueado porque el usuario solicitó actualizar "
+                    "un recuerdo existente.\n"
+                    "Estos son los recuerdos disponibles con sus ID reales:\n"
+                    + str(recuerdos)
+                    + "\nDebes identificar el recuerdo relacionado con la solicitud "
+                    "y utilizar actualizar_recuerdo con su ID numérico. "
+                    "No inventes IDs ni guardes un recuerdo nuevo."
+                )
+
+                mensajes.append({
+                    'role': 'tool',
+                    'content': str(resultado)
+                })
+
+                continue
+
             funcion_real = mapa_funciones[nombre_funcion]
-            resultado = funcion_real(**argumentos)
+
+            # Validar el ID antes de actualizar un recuerdo
+            if nombre_funcion == "actualizar_recuerdo":
+
+                id_recuerdo = argumentos.get("id_recuerdo")
+
+                if not str(id_recuerdo).isdigit():
+                    resultado = (
+                        "Error: el ID del recuerdo no es válido. "
+                        "Debes consultar los recuerdos y obtener su ID numérico."
+                    )
+
+                else:
+                    argumentos["id_recuerdo"] = int(id_recuerdo)
+
+                    recuerdos = obtener_recuerdos()
+
+                    ids_validos = [
+                        recuerdo[0] for recuerdo in recuerdos
+                    ]
+
+                    if argumentos["id_recuerdo"] not in ids_validos:
+                        resultado = (
+                            "Error: el ID del recuerdo no existe. "
+                            "Debes consultar los recuerdos y obtener su ID numérico."
+                        )
+                    else:
+                        resultado = funcion_real(**argumentos)
+
+            else:
+                resultado = funcion_real(**argumentos)
 
             mensajes.append({
                 'role': 'tool',
@@ -242,6 +378,7 @@ Responde siempre de manera natural y breve.
             })
 
     return "No pude completar la operación. Inténtalo nuevamente."
+
 
 
 
