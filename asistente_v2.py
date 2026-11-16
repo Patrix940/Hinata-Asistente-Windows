@@ -18,7 +18,8 @@ from memoria.database import inicializar_db
 from memoria.memoria import (
     guardar_recuerdo,
     obtener_recuerdos,
-    actualizar_recuerdo
+    actualizar_recuerdo,
+    eliminar_recuerdo
 )
 
 # Inicializar la base de datos de Hinata
@@ -110,7 +111,8 @@ mis_herramientas = [
     ver_hora_actual,
     guardar_recuerdo,
     obtener_recuerdos,
-    actualizar_recuerdo
+    actualizar_recuerdo,
+    eliminar_recuerdo
 ]
 
 mapa_funciones = {
@@ -118,7 +120,9 @@ mapa_funciones = {
     "crear_nota": crear_nota,
     "ver_hora_actual": ver_hora_actual,
     "guardar_recuerdo": guardar_recuerdo,
-    "obtener_recuerdos": obtener_recuerdos
+    "obtener_recuerdos": obtener_recuerdos,
+    "actualizar_recuerdo": actualizar_recuerdo,
+    "eliminar_recuerdo": eliminar_recuerdo
 }
 
 def procesar_orden(mensaje):
@@ -156,54 +160,46 @@ Responde de forma breve, amable y natural para ser leída en voz alta.
 
 Tu objetivo es ayudar al usuario, comprender sus necesidades y recordar información importante para futuras conversaciones.
 
+
 SISTEMA DE MEMORIA:
 
-Tienes acceso a dos herramientas:
+Tienes acceso a cuatro herramientas de memoria:
+
 - guardar_recuerdo(categoria, contenido)
 - obtener_recuerdos(categoria)
+- actualizar_recuerdo(id_recuerdo, nuevo_contenido)
+- eliminar_recuerdo(id_recuerdo)
 
 Debes gestionar tu memoria de forma inteligente siguiendo estas reglas:
 
-1. Cuando el usuario comparta información personal estable,
-preferencias, gustos, objetivos o información importante sobre
-sus proyectos, evalúa si merece ser recordada.
+1. Cuando el usuario comparta información personal estable, preferencias, gustos, objetivos o información importante sobre sus proyectos, evalúa si merece ser recordada.
 
-2. Si la información es útil para futuras conversaciones,
-guárdala utilizando guardar_recuerdo.
+2. Si la información es útil para futuras conversaciones y no está almacenada, guárdala utilizando guardar_recuerdo.
 
-3. No guardes saludos, preguntas comunes, comentarios triviales,
-información temporal ni datos que ya estén almacenados.
+3. No guardes saludos, preguntas comunes, comentarios triviales, información temporal ni datos que ya estén almacenados.
 
-4. Nunca guardes contraseñas, credenciales ni información
-personal sensible.
+4. Nunca guardes contraseñas, credenciales ni información personal sensible.
 
+5. Antes de responder preguntas sobre información personal, proyectos, preferencias o recuerdos anteriores, consulta obtener_recuerdos cuando sea pertinente.
 
-5. Antes de responder preguntas sobre información personal,
-proyectos, preferencias o recuerdos anteriores, consulta
-obtener_recuerdos cuando sea pertinente.
+6. Si no conoces la categoría exacta de un recuerdo, utiliza obtener_recuerdos() sin argumentos para consultar todos los recuerdos almacenados.
 
-6. Si no conoces la categoría exacta de un recuerdo,
-utiliza obtener_recuerdos() SIN argumentos para consultar
-todos los recuerdos almacenados.
+7. Nunca inventes recuerdos ni afirmes recordar información que no hayas encontrado.
 
-7. Solo utiliza obtener_recuerdos(categoria) cuando conozcas
-con certeza la categoría exacta que estás buscando.
+8. Cuando el usuario solicite modificar un recuerdo, primero consulta los recuerdos para identificar el ID correcto. Después utiliza actualizar_recuerdo con ese ID y el nuevo contenido.
 
-8. Después de recuperar los recuerdos, analiza su contenido
-y selecciona la información relacionada con la pregunta
-del usuario.
+9. Cuando el usuario solicite eliminar un recuerdo, primero consulta los recuerdos para identificar el ID correcto.
 
-9. Nunca inventes recuerdos ni afirmes recordar información
-que no hayas encontrado.
+10. Si existen varios recuerdos que podrían corresponder a lo que quiere eliminar, pregunta al usuario cuál desea borrar antes de utilizar eliminar_recuerdo.
 
+11. Nunca inventes IDs de recuerdos ni modifiques o elimines información sin identificar correctamente el recuerdo.
 
 HERRAMIENTAS:
 
-Puedes utilizar las herramientas disponibles para abrir
-programas, crear notas y consultar la hora.
+Puedes utilizar las herramientas disponibles para abrir programas, crear notas y consultar la hora.
 
-Antes de ejecutar una herramienta, verifica que la acción
-corresponda a lo que solicita el usuario.
+Antes de ejecutar una herramienta, verifica que la acción corresponda a lo que solicita el usuario.
+
 
 Responde siempre de manera natural y breve.
 """
@@ -211,24 +207,42 @@ Responde siempre de manera natural y breve.
         {'role': 'user', 'content': mensaje}
     ]
 
-    respuesta = ollama.chat(model='llama3.1', messages=mensajes, tools=mis_herramientas)
+    
+    # Permitir varias rondas de herramientas
+    for intento in range(5):
 
-    if respuesta['message'].get('tool_calls'):
+        respuesta = ollama.chat(
+            model='llama3.1',
+            messages=mensajes,
+            tools=mis_herramientas
+        )
+
+        llamadas = respuesta['message'].get('tool_calls')
+
+        # Si no necesita más herramientas, devuelve la respuesta.
+        if not llamadas:
+            return respuesta['message']['content']
+
         mensajes.append(respuesta['message'])
-        for llamada in respuesta['message']['tool_calls']:
+
+        # Ejecutar las herramientas solicitadas.
+        for llamada in llamadas:
+
             nombre_funcion = llamada['function']['name']
             argumentos = llamada['function']['arguments']
-            
+
             print(f"[Ejecutando: {nombre_funcion} -> {argumentos}]")
+
             funcion_real = mapa_funciones[nombre_funcion]
             resultado = funcion_real(**argumentos)
-            
-            mensajes.append({'role': 'tool', 'content': str(resultado)})
 
-        respuesta_final = ollama.chat(model='llama3.1', messages=mensajes)
-        return respuesta_final['message']['content']
+            mensajes.append({
+                'role': 'tool',
+                'content': str(resultado)
+            })
 
-    return respuesta['message']['content']
+    return "No pude completar la operación. Inténtalo nuevamente."
+
 
 
 def grabar_orden_segura(duracion=20):
