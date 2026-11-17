@@ -18,39 +18,46 @@ def guardar_recuerdo(categoria, contenido):
 
     return True
 
-
-
 def obtener_recuerdos(categoria=None):
-    """Recupera recuerdos y busca automáticamente en todos
-    cuando la categoría indicada no tiene coincidencias."""
+    """Recupera recuerdos por categoría.
+    Si no encuentra coincidencias, devuelve todos los recuerdos.
+    """
 
     conexion = conectar_db()
     cursor = conexion.cursor()
 
     if categoria:
         cursor.execute(
-            "SELECT id, categoria, contenido, fecha_creacion "
-            "FROM recuerdos WHERE categoria = ? ORDER BY id DESC",
+            """
+            SELECT id, categoria, contenido, fecha_creacion
+            FROM recuerdos
+            WHERE LOWER(categoria) = LOWER(?)
+            ORDER BY id DESC
+            """,
             (categoria,)
         )
 
         recuerdos = cursor.fetchall()
 
-        # Si no encuentra resultados en esa categoría,
-        # consulta todos los recuerdos disponibles.
+        # Si no encuentra la categoría, consulta todos los recuerdos.
         if not recuerdos:
             cursor.execute(
-                "SELECT id, categoria, contenido, fecha_creacion "
-                "FROM recuerdos ORDER BY id DESC"
+                """
+                SELECT id, categoria, contenido, fecha_creacion
+                FROM recuerdos
+                ORDER BY id DESC
+                """
             )
             recuerdos = cursor.fetchall()
 
     else:
         cursor.execute(
-            "SELECT id, categoria, contenido, fecha_creacion "
-            "FROM recuerdos ORDER BY id DESC"
+            """
+            SELECT id, categoria, contenido, fecha_creacion
+            FROM recuerdos
+            ORDER BY id DESC
+            """
         )
-
         recuerdos = cursor.fetchall()
 
     conexion.close()
@@ -58,26 +65,46 @@ def obtener_recuerdos(categoria=None):
     return recuerdos
 
 
-def actualizar_recuerdo(id_recuerdo, nuevo_contenido):
-    """Actualiza el contenido de un recuerdo existente."""
+def actualizar_recuerdo(id_recuerdo: int, nuevo_contenido: str):
+    """Actualiza un recuerdo usando su ID numérico y el contenido nuevo."""
 
     conexion = conectar_db()
     cursor = conexion.cursor()
 
+    # Buscar el recuerdo existente
     cursor.execute(
-        "UPDATE recuerdos SET contenido = ? WHERE id = ?",
-        (nuevo_contenido, id_recuerdo)
+        "SELECT contenido FROM recuerdos WHERE id = ?",
+        (id_recuerdo,)
     )
 
-    actualizado = cursor.rowcount > 0
+    resultado = cursor.fetchone()
+
+    if resultado is None:
+        conexion.close()
+        return False
+
+    contenido_anterior = resultado[0]
+
+    # Evitar guardar información repetida
+    if nuevo_contenido.lower() in contenido_anterior.lower():
+        conexion.close()
+        return True
+
+    # Agregar la información nueva
+    contenido_actualizado = (
+        contenido_anterior + ". También le gusta " + nuevo_contenido
+    )
+
+    # Guardar el recuerdo actualizado
+    cursor.execute(
+        "UPDATE recuerdos SET contenido = ? WHERE id = ?",
+        (contenido_actualizado, id_recuerdo)
+    )
 
     conexion.commit()
     conexion.close()
 
-    return actualizado
-
-
-
+    return True
 
 def eliminar_recuerdo(id_recuerdo):
     """Elimina un recuerdo usando su identificador."""

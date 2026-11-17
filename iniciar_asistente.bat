@@ -1,10 +1,7 @@
 
 @echo off
-
 cd /d "%~dp0"
 
-call venv\Scripts\activate.bat
+start "" "%~dp0venv\Scripts\pythonw.exe" "%~dp0interfaz\mascota.py"
 
-python asistente_v2.py
-
-pause
+exit

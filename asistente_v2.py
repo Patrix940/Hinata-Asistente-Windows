@@ -4,6 +4,7 @@ import queue
 import wave
 import webrtcvad
 import unicodedata
+import threading
 import time
 import numpy as np
 import collections
@@ -22,12 +23,23 @@ from memoria.memoria import (
     eliminar_recuerdo
 )
 
+# Comunicación con la mascota visual de Hinata
+cambiar_estado_callback = None
+
+
+def notificar_estado(estado):
+    
+    if cambiar_estado_callback is not None:
+        cambiar_estado_callback(estado)
+
 # Inicializar la base de datos de Hinata
 inicializar_db()
 
 print("[Memoria de Hinata inicializada correctamente]")
 
 # Función de voz robusta y limpia para evitar bloqueos
+# Función de voz robusta y limpia para evitar bloqueos
+
 def hablar(texto):
     print(f"Hinata: {texto}")
     try:
@@ -39,10 +51,14 @@ def hablar(texto):
     except Exception as e:
         print(f"Error en voz (TTS): {e}")
 
+
+
 # 2. Cargar el modelo offline de Vosk para escuchar la palabra clave
 print("Cargando modelo de escucha en segundo plano...")
 modelo_vosk = Model("modelo_voz")
 cola_audio = queue.Queue()
+# Señal para detener el asistente de forma controlada
+detener_asistente = threading.Event()
 
 def callback_audio(indata, frames, time, status):
     """Recibe bloques de audio del micrófono en tiempo real."""
@@ -55,9 +71,16 @@ def esperar_palabra_clave():
     variaciones_clave = ["hinata", "inata", "jinata", "renata", "ginata", "nata", "sinata", "y nata", "asistente"]
     
     print("\n[Modo reposo: Di 'Hinata' para activar...]")
+
+    notificar_estado("escuchando")
+
     with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype='int16', channels=1, callback=callback_audio):
-        while True:
-            datos = cola_audio.get()
+        while not detener_asistente.is_set():
+            try:
+                datos = cola_audio.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            
             if reconocedor.AcceptWaveform(datos):
                 resultado = json.loads(reconocedor.Result())
                 texto = resultado.get("text", "").lower()
@@ -68,8 +91,11 @@ def esperar_palabra_clave():
             if texto:
                 print(f"Escuchando: {texto}", end="\r")
                 if any(palabra in texto for palabra in variaciones_clave):
-                    print() # Salto de línea limpio
+                    print()
                     return True
+
+                if detener_asistente.is_set():
+                    return False
 
 def escuchar_orden():
     """Graba la orden completa durante 5 segundos tras despertar."""
@@ -125,8 +151,9 @@ mapa_funciones = {
     "eliminar_recuerdo": eliminar_recuerdo
 }
 
+
 def procesar_orden(mensaje):
-        # Detectar preguntas relacionadas con la hora
+    # Detectar preguntas relacionadas con la hora
     mensaje_normalizado = unicodedata.normalize(
         "NFD", mensaje.lower()
     )
@@ -134,6 +161,20 @@ def procesar_orden(mensaje):
     mensaje_normalizado = "".join(
         c for c in mensaje_normalizado
         if unicodedata.category(c) != "Mn"
+    )
+
+    # Detectar solicitudes de actualización de recuerdos
+    solicitud_actualizacion = any(
+        frase in mensaje_normalizado
+        for frase in [
+            "actualiza",
+            "actualizar",
+            "actualiza mis recuerdos",
+            "modifica mi recuerdo",
+            "modificar mi recuerdo",
+            "corrige mi recuerdo",
+            "corrige mis recuerdos"
+        ]
     )
 
     frases_hora = [
@@ -150,11 +191,73 @@ def procesar_orden(mensaje):
     if any(frase in mensaje_normalizado for frase in frases_hora):
         print("[Ejecutando: ver_hora_actual]")
         return ver_hora_actual()
+
     
+    # Actualizar directamente los gustos de videojuegos
+    # cuando el usuario indica que también le gusta otro juego.
+    if (
+        solicitud_actualizacion
+        and "tambien me gusta jugar" in mensaje_normalizado
+    ):
+        nuevo_contenido = mensaje_normalizado.split(
+            "tambien me gusta jugar", 1
+        )[1]
+
+        for terminador in [
+            " actualiza",
+            " actualizar",
+            " modifica",
+            " modificar",
+            " corrige",
+            " corregir"
+        ]:
+            nuevo_contenido = nuevo_contenido.split(
+                terminador, 1
+            )[0]
+
+        nuevo_contenido = nuevo_contenido.strip(" .,!?¿¡")
+
+        if not nuevo_contenido:
+            return "No pude identificar el videojuego que quieres agregar."
+
+        recuerdos = obtener_recuerdos()
+
+        recuerdos_juegos = [
+            recuerdo for recuerdo in recuerdos
+            if recuerdo[1].strip().lower() == "juegos favoritos"
+        ]
+
+        if len(recuerdos_juegos) != 1:
+            return (
+                "No pude identificar un único recuerdo de juegos favoritos. "
+                "No modifiqué ningún recuerdo."
+            )
+
+        id_correcto = recuerdos_juegos[0][0]
+
+        print(
+            f"[Actualizando recuerdo de videojuegos: "
+            f"ID {id_correcto} -> {nuevo_contenido}]"
+        )
+
+        resultado = actualizar_recuerdo(
+            id_correcto,
+            nuevo_contenido
+        )
+
+        if resultado:
+            return (
+                f"Listo. Agregué {nuevo_contenido} "
+                "a tus juegos favoritos sin borrar los anteriores."
+            )
+
+        return "No pude actualizar el recuerdo."
+
+
     mensajes = [
         {
-    'role': 'system',
-    'content': """
+            'role': 'system',
+            'content': """
 Eres Hinata, un asistente personal de Windows.
 Responde de forma breve, amable y natural para ser leída en voz alta.
 
@@ -186,13 +289,20 @@ Debes gestionar tu memoria de forma inteligente siguiendo estas reglas:
 
 7. Nunca inventes recuerdos ni afirmes recordar información que no hayas encontrado.
 
-8. Cuando el usuario solicite modificar un recuerdo, primero consulta los recuerdos para identificar el ID correcto. Después utiliza actualizar_recuerdo con ese ID y el nuevo contenido.
+8. Cuando el usuario solicite modificar o actualizar un recuerdo, primero ejecuta obtener_recuerdos() sin argumentos para consultar todos los recuerdos.
 
-9. Cuando el usuario solicite eliminar un recuerdo, primero consulta los recuerdos para identificar el ID correcto.
+9. Los recuerdos devueltos contienen cuatro datos: ID, categoría, contenido y fecha. El ID siempre es el primer dato y es un número entero.
 
-10. Si existen varios recuerdos que podrían corresponder a lo que quiere eliminar, pregunta al usuario cuál desea borrar antes de utilizar eliminar_recuerdo.
+10. Para utilizar actualizar_recuerdo, debes copiar exactamente el ID numérico del recuerdo encontrado. Nunca utilices el nombre de la categoría, el contenido del recuerdo ni texto inventado como identificador.
 
-11. Nunca inventes IDs de recuerdos ni modifiques o elimines información sin identificar correctamente el recuerdo.
+11. El parámetro id_recuerdo debe contener exclusivamente el número del ID. El parámetro nuevo_contenido debe contener únicamente la información nueva que se desea agregar o actualizar, no toda la frase que dijo el usuario.
+
+12. Si el usuario dice "también", conserva la información anterior y agrega la nueva. Si solicita reemplazar o corregir un dato, modifica únicamente la información correspondiente.
+
+13. Si existen varios recuerdos relacionados y no puedes identificar con seguridad cuál modificar, pregunta al usuario antes de actualizar.
+
+14. Nunca afirmes que actualizaste un recuerdo si la herramienta devuelve False.
+
 
 HERRAMIENTAS:
 
@@ -200,14 +310,15 @@ Puedes utilizar las herramientas disponibles para abrir programas, crear notas y
 
 Antes de ejecutar una herramienta, verifica que la acción corresponda a lo que solicita el usuario.
 
-
 Responde siempre de manera natural y breve.
 """
-},
+        },
         {'role': 'user', 'content': mensaje}
     ]
 
-    
+    # Cambiar la apariencia de Hinata mientras procesa la solicitud
+    notificar_estado("pensando")
+
     # Permitir varias rondas de herramientas
     for intento in range(5):
 
@@ -219,13 +330,13 @@ Responde siempre de manera natural y breve.
 
         llamadas = respuesta['message'].get('tool_calls')
 
-        # Si no necesita más herramientas, devuelve la respuesta.
+        # Si no necesita más herramientas, devuelve la respuesta
         if not llamadas:
             return respuesta['message']['content']
 
         mensajes.append(respuesta['message'])
 
-        # Ejecutar las herramientas solicitadas.
+        # Ejecutar las herramientas solicitadas
         for llamada in llamadas:
 
             nombre_funcion = llamada['function']['name']
@@ -233,8 +344,62 @@ Responde siempre de manera natural y breve.
 
             print(f"[Ejecutando: {nombre_funcion} -> {argumentos}]")
 
+            # Bloquear guardados cuando se solicita actualizar
+            if solicitud_actualizacion and nombre_funcion == "guardar_recuerdo":
+
+                print("[Protección: guardado bloqueado porque solicitaste actualizar]")
+
+                recuerdos = obtener_recuerdos()
+
+                resultado = (
+                    "El guardado fue bloqueado porque el usuario solicitó actualizar "
+                    "un recuerdo existente.\n"
+                    "Estos son los recuerdos disponibles con sus ID reales:\n"
+                    + str(recuerdos)
+                    + "\nDebes identificar el recuerdo relacionado con la solicitud "
+                    "y utilizar actualizar_recuerdo con su ID numérico. "
+                    "No inventes IDs ni guardes un recuerdo nuevo."
+                )
+
+                mensajes.append({
+                    'role': 'tool',
+                    'content': str(resultado)
+                })
+
+                continue
+
             funcion_real = mapa_funciones[nombre_funcion]
-            resultado = funcion_real(**argumentos)
+
+            # Validar el ID antes de actualizar un recuerdo
+            if nombre_funcion == "actualizar_recuerdo":
+
+                id_recuerdo = argumentos.get("id_recuerdo")
+
+                if not str(id_recuerdo).isdigit():
+                    resultado = (
+                        "Error: el ID del recuerdo no es válido. "
+                        "Debes consultar los recuerdos y obtener su ID numérico."
+                    )
+
+                else:
+                    argumentos["id_recuerdo"] = int(id_recuerdo)
+
+                    recuerdos = obtener_recuerdos()
+
+                    ids_validos = [
+                        recuerdo[0] for recuerdo in recuerdos
+                    ]
+
+                    if argumentos["id_recuerdo"] not in ids_validos:
+                        resultado = (
+                            "Error: el ID del recuerdo no existe. "
+                            "Debes consultar los recuerdos y obtener su ID numérico."
+                        )
+                    else:
+                        resultado = funcion_real(**argumentos)
+
+            else:
+                resultado = funcion_real(**argumentos)
 
             mensajes.append({
                 'role': 'tool',
@@ -242,6 +407,7 @@ Responde siempre de manera natural y breve.
             })
 
     return "No pude completar la operación. Inténtalo nuevamente."
+
 
 
 
@@ -280,6 +446,9 @@ def grabar_orden_segura(duracion=20):
         ) as stream:
 
             for _ in range(max_frames):
+
+                if detener_asistente.is_set():
+                    return None
 
                 audio_data, overflowed = stream.read(frame_size)
 
@@ -325,6 +494,7 @@ def grabar_orden_segura(duracion=20):
         wav_io.seek(0)
 
         recognizer = sr.Recognizer()
+        recognizer.operation_timeout = 5
 
         with sr.AudioFile(wav_io) as source:
             audio = recognizer.record(source)
@@ -353,62 +523,79 @@ def grabar_orden_segura(duracion=20):
 
 # 4. Bucle principal con conversación continua
 
-hablar("Sistemas listos. Llámame cuando me necesites.")
 
-while True:
+def ejecutar_asistente():
 
-    # Esperar la palabra clave para activar Hinata
-    if esperar_palabra_clave():
+    hablar("Sistemas listos. Llámame cuando me necesites.")
 
-        with cola_audio.mutex:
-            cola_audio.queue.clear()
+    while not detener_asistente.is_set():
 
-        hablar("¿Sí? Te escucho.")
+        # Esperar la palabra clave para activar Hinata
+        if esperar_palabra_clave():
 
-        # Entrar en modo conversación
-        intentos_sin_respuesta = 0
+            if detener_asistente.is_set():
+                break
 
-        
-    while True:
+            with cola_audio.mutex:
+                cola_audio.queue.clear()
 
-        # Esperar una instrucción durante un máximo de 20 segundos
-        orden = grabar_orden_segura(duracion=20)
+            hablar("¿Sí? Te escucho.")
 
-        # Si no se detectó voz durante los 20 segundos
-        if orden is None:
+            # Entrar en modo conversación
+            intentos_sin_respuesta = 0
 
-            hablar("Han pasado 20 segundos sin recibir instrucciones. Vuelvo al modo de espera.")
+        else:
             break
 
-        # Si se detectó voz, pero no se pudo reconocer
-        if not orden:
-            hablar("No he conseguido entenderte. Puedes repetirlo.")
-            continue
+        while not detener_asistente.is_set():
 
-        # Normalizar la orden
-        orden_limpia = orden.lower().strip()
+            # Esperar una instrucción durante un máximo de 20 segundos
+            orden = grabar_orden_segura(duracion=20)
 
-        # Comprobar si el usuario quiere finalizar la conversación
-        palabras_salida = [
-            "apágate",
-            "apagate",
-            "descansa",
-            "adiós",
-            "adios",
-            "hasta luego",
-            "terminar conversación",
-            "terminar conversacion"
-        ]
+            if detener_asistente.is_set():
+                break
 
-        if orden_limpia in palabras_salida:
-            hablar("Entendido. Vuelvo al modo de espera. Hasta luego.")
-            break
+            # Si no se detectó voz durante los 20 segundos
+            if orden is None:
+                hablar("Han pasado 20 segundos sin recibir instrucciones. Vuelvo al modo de espera.")
+                break
 
-        # Procesar la orden con Ollama
-        respuesta_ia = procesar_orden(orden)
+            # Si se detectó voz, pero no se pudo reconocer
+            if not orden:
+                hablar("No he conseguido entenderte. Puedes repetirlo.")
+                continue
 
-        # Responder sin abandonar el modo conversación
-        hablar(respuesta_ia)
+            # Normalizar la orden
+            orden_limpia = orden.lower().strip()
 
-    # Al terminar la conversación, volverá a esperar la palabra clave
+            # Comprobar si el usuario quiere finalizar la conversación
+            palabras_salida = [
+                "apágate",
+                "apagate",
+                "descansa",
+                "adiós",
+                "adios",
+                "hasta luego",
+                "terminar conversación",
+                "terminar conversacion"
+            ]
+
+            if orden_limpia in palabras_salida:
+                hablar("Entendido. Vuelvo al modo de espera. Hasta luego.")
+                break
+
+            # Procesar la orden con Ollama
+            respuesta_ia = procesar_orden(orden)
+
+            if detener_asistente.is_set():
+                break
+
+            # Responder sin abandonar el modo conversación
+            hablar(respuesta_ia)
+
+    notificar_estado("disponible")
+
+if __name__ == "__main__":
+    ejecutar_asistente()
+
 
