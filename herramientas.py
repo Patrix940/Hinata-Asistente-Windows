@@ -8,13 +8,13 @@ def abrir_programa(nombre: str) -> str:
         "calculadora": "calc.exe",
         "bloc": "notepad.exe",
         "navegador": "start brave",
-        "steam": "start steam://",
+        "steam": 'start "" "C:\\Program Files (x86)\\Steam\\steam.exe"',
         "epic": 'start "" "C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe"',
         "valorant": 'start "" "C:\\Riot Games\\Riot Client\\RiotClientServices.exe" --launch-product=valorant --launch-patchline=live',
         "league of legends": 'start "" "C:\\Riot Games\\Riot Client\\RiotClientServices.exe" --launch-product=league_of_legends --launch-patchline=live',
         "roblox": 'start "" "C:\\Users\\el_mo\\AppData\\Local\\Roblox\\Versions\\version-4ea8e85481e34f46\\RobloxPlayerBeta.exe"',
         "discord": 'start "" "C:\\Users\\el_mo\\AppData\\Local\\Discord\\Discord.exe"',
-        "spotify": 'start spotify://'
+        "spotify": 'explorer.exe shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'
     }
     comando = programas.get(nombre.lower())
     if comando:

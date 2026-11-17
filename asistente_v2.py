@@ -4,6 +4,7 @@ import queue
 import wave
 import webrtcvad
 import unicodedata
+import threading
 import time
 import numpy as np
 import collections
@@ -22,12 +23,23 @@ from memoria.memoria import (
     eliminar_recuerdo
 )
 
+# Comunicación con la mascota visual de Hinata
+cambiar_estado_callback = None
+
+
+def notificar_estado(estado):
+    
+    if cambiar_estado_callback is not None:
+        cambiar_estado_callback(estado)
+
 # Inicializar la base de datos de Hinata
 inicializar_db()
 
 print("[Memoria de Hinata inicializada correctamente]")
 
 # Función de voz robusta y limpia para evitar bloqueos
+# Función de voz robusta y limpia para evitar bloqueos
+
 def hablar(texto):
     print(f"Hinata: {texto}")
     try:
@@ -39,10 +51,14 @@ def hablar(texto):
     except Exception as e:
         print(f"Error en voz (TTS): {e}")
 
+
+
 # 2. Cargar el modelo offline de Vosk para escuchar la palabra clave
 print("Cargando modelo de escucha en segundo plano...")
 modelo_vosk = Model("modelo_voz")
 cola_audio = queue.Queue()
+# Señal para detener el asistente de forma controlada
+detener_asistente = threading.Event()
 
 def callback_audio(indata, frames, time, status):
     """Recibe bloques de audio del micrófono en tiempo real."""
@@ -55,9 +71,16 @@ def esperar_palabra_clave():
     variaciones_clave = ["hinata", "inata", "jinata", "renata", "ginata", "nata", "sinata", "y nata", "asistente"]
     
     print("\n[Modo reposo: Di 'Hinata' para activar...]")
+
+    notificar_estado("escuchando")
+
     with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype='int16', channels=1, callback=callback_audio):
-        while True:
-            datos = cola_audio.get()
+        while not detener_asistente.is_set():
+            try:
+                datos = cola_audio.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            
             if reconocedor.AcceptWaveform(datos):
                 resultado = json.loads(reconocedor.Result())
                 texto = resultado.get("text", "").lower()
@@ -68,8 +91,11 @@ def esperar_palabra_clave():
             if texto:
                 print(f"Escuchando: {texto}", end="\r")
                 if any(palabra in texto for palabra in variaciones_clave):
-                    print() # Salto de línea limpio
+                    print()
                     return True
+
+                if detener_asistente.is_set():
+                    return False
 
 def escuchar_orden():
     """Graba la orden completa durante 5 segundos tras despertar."""
@@ -290,6 +316,9 @@ Responde siempre de manera natural y breve.
         {'role': 'user', 'content': mensaje}
     ]
 
+    # Cambiar la apariencia de Hinata mientras procesa la solicitud
+    notificar_estado("pensando")
+
     # Permitir varias rondas de herramientas
     for intento in range(5):
 
@@ -418,6 +447,9 @@ def grabar_orden_segura(duracion=20):
 
             for _ in range(max_frames):
 
+                if detener_asistente.is_set():
+                    return None
+
                 audio_data, overflowed = stream.read(frame_size)
 
                 if overflowed:
@@ -462,6 +494,7 @@ def grabar_orden_segura(duracion=20):
         wav_io.seek(0)
 
         recognizer = sr.Recognizer()
+        recognizer.operation_timeout = 5
 
         with sr.AudioFile(wav_io) as source:
             audio = recognizer.record(source)
@@ -490,62 +523,79 @@ def grabar_orden_segura(duracion=20):
 
 # 4. Bucle principal con conversación continua
 
-hablar("Sistemas listos. Llámame cuando me necesites.")
 
-while True:
+def ejecutar_asistente():
 
-    # Esperar la palabra clave para activar Hinata
-    if esperar_palabra_clave():
+    hablar("Sistemas listos. Llámame cuando me necesites.")
 
-        with cola_audio.mutex:
-            cola_audio.queue.clear()
+    while not detener_asistente.is_set():
 
-        hablar("¿Sí? Te escucho.")
+        # Esperar la palabra clave para activar Hinata
+        if esperar_palabra_clave():
 
-        # Entrar en modo conversación
-        intentos_sin_respuesta = 0
+            if detener_asistente.is_set():
+                break
 
-        
-    while True:
+            with cola_audio.mutex:
+                cola_audio.queue.clear()
 
-        # Esperar una instrucción durante un máximo de 20 segundos
-        orden = grabar_orden_segura(duracion=20)
+            hablar("¿Sí? Te escucho.")
 
-        # Si no se detectó voz durante los 20 segundos
-        if orden is None:
+            # Entrar en modo conversación
+            intentos_sin_respuesta = 0
 
-            hablar("Han pasado 20 segundos sin recibir instrucciones. Vuelvo al modo de espera.")
+        else:
             break
 
-        # Si se detectó voz, pero no se pudo reconocer
-        if not orden:
-            hablar("No he conseguido entenderte. Puedes repetirlo.")
-            continue
+        while not detener_asistente.is_set():
 
-        # Normalizar la orden
-        orden_limpia = orden.lower().strip()
+            # Esperar una instrucción durante un máximo de 20 segundos
+            orden = grabar_orden_segura(duracion=20)
 
-        # Comprobar si el usuario quiere finalizar la conversación
-        palabras_salida = [
-            "apágate",
-            "apagate",
-            "descansa",
-            "adiós",
-            "adios",
-            "hasta luego",
-            "terminar conversación",
-            "terminar conversacion"
-        ]
+            if detener_asistente.is_set():
+                break
 
-        if orden_limpia in palabras_salida:
-            hablar("Entendido. Vuelvo al modo de espera. Hasta luego.")
-            break
+            # Si no se detectó voz durante los 20 segundos
+            if orden is None:
+                hablar("Han pasado 20 segundos sin recibir instrucciones. Vuelvo al modo de espera.")
+                break
 
-        # Procesar la orden con Ollama
-        respuesta_ia = procesar_orden(orden)
+            # Si se detectó voz, pero no se pudo reconocer
+            if not orden:
+                hablar("No he conseguido entenderte. Puedes repetirlo.")
+                continue
 
-        # Responder sin abandonar el modo conversación
-        hablar(respuesta_ia)
+            # Normalizar la orden
+            orden_limpia = orden.lower().strip()
 
-    # Al terminar la conversación, volverá a esperar la palabra clave
+            # Comprobar si el usuario quiere finalizar la conversación
+            palabras_salida = [
+                "apágate",
+                "apagate",
+                "descansa",
+                "adiós",
+                "adios",
+                "hasta luego",
+                "terminar conversación",
+                "terminar conversacion"
+            ]
+
+            if orden_limpia in palabras_salida:
+                hablar("Entendido. Vuelvo al modo de espera. Hasta luego.")
+                break
+
+            # Procesar la orden con Ollama
+            respuesta_ia = procesar_orden(orden)
+
+            if detener_asistente.is_set():
+                break
+
+            # Responder sin abandonar el modo conversación
+            hablar(respuesta_ia)
+
+    notificar_estado("disponible")
+
+if __name__ == "__main__":
+    ejecutar_asistente()
+
 
